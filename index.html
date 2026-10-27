@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cetak Struk - Android Mobil Karawang</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
+        .container { max-width: 380px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h3 { margin-top: 0; color: #333; }
+        button { padding: 12px 20px; font-size: 16px; cursor: pointer; background-color: #28a745; color: white; border: none; border-radius: 6px; width: 100%; font-weight: bold; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        #status { margin-top: 15px; font-size: 14px; color: #555; }
+        .preview { text-align: left; background: #fffdf5; padding: 15px; border: 1px dashed #888; font-family: monospace; white-space: pre-wrap; margin-bottom: 20px; font-size: 12px; line-height: 1.4; overflow-x: auto; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h3>Preview Nota Transaksi</h3>
+        <div class="preview" id="receiptPreview">Memuat data struk...</div>
+        <button id="printBtn">🖨️ Hubungkan & Cetak Struk</button>
+        <div id="status">Pastikan Bluetooth & Printer Thermal menyala.</div>
+    </div>
+
+    <script>
+        // 1. Menangkap semua parameter yang dikirim dari AppSheet
+        const p = new URLSearchParams(window.location.search);
+        const pt      = p.get('pt') || 'ANDROID MOBIL KARAWANG';
+        const alamat  = p.get('alamat') || '-';
+        const telp    = p.get('telp') || '-';
+        const tgl     = p.get('tgl') || '-';
+        const id      = p.get('id') || '-';
+        const ket     = p.get('ket') || '-';
+        const item    = p.get('item') || '-';
+        const sub     = p.get('sub') || '0';
+        const diskon  = p.get('diskon') || '0';
+        const total   = p.get('total') || '0';
+        const tunai   = p.get('tunai') || '0';
+        const kembali = p.get('kembali') || '0';
+
+        // 2. Menyusun tata letak struk sesuai format lama Anda (Lebar 32 Karakter)
+        const receiptText = 
+`      ${pt}
+${alamat}
+          ${telp}
+--------------------------------
+Tanggal    : ${tgl}
+ID         : ${id}
+Keterangan : ${ket}
+--------------------------------
+${item}
+--------------------------------
+Subtotal : ${sub}
+Diskon   : ${diskon}
+--------------------------------
+TOTAL    : ${total}
+TUNAI    : ${tunai}
+KEMBALI  : ${kembali}
+--------------------------------
+          TERIMA KASIH          
+      Bawa Struk & Box Ini      
+      Untuk Klaim Garansi       
+\n\n\n`;
+
+        // Tampilkan di layar web
+        document.getElementById('receiptPreview').innerText = receiptText;
+
+        // 3. Fungsi Cetak ke Printer Bluetooth (Web Bluetooth API)
+        document.getElementById('printBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('printBtn');
+            const status = document.getElementById('status');
+            
+            btn.disabled = true;
+            status.innerText = "Mencari printer Bluetooth...";
+
+            try {
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: [
+                        '000018f0-0000-1000-8000-00805f9b34fb',
+                        'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+                        '49535343-fe7d-4ae5-8fa9-9fafd205e455'
+                    ]
+                });
+
+                status.innerText = `Menghubungkan ke ${device.name || 'Printer'}...`;
+                const server = await device.gatt.connect();
+
+                const services = await server.getPrimaryServices();
+                if (services.length === 0) throw new Error("Service Bluetooth printer tidak ditemukan.");
+
+                let writeChar = null;
+                for (const service of services) {
+                    const chars = await service.getCharacteristics();
+                    writeChar = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
+                    if (writeChar) break;
+                }
+
+                if (!writeChar) throw new Error("Karakteristik cetak (Write) tidak ditemukan.");
+
+                status.innerText = "Mengirim data ke printer...";
+
+                // Reset printer (ESC @) + Teks Struk
+                const encoder = new TextEncoder();
+                const initPrinter = new Uint8Array([0x1B, 0x40]);
+                const textBytes = encoder.encode(receiptText);
+                
+                const fullData = new Uint8Array(initPrinter.length + textBytes.length);
+                fullData.set(initPrinter, 0);
+                fullData.set(textBytes, initPrinter.length);
+
+                // Kirim bertahap (Chunking 100 byte) agar printer tidak hang/terpotong
+                const CHUNK_SIZE = 100;
+                for (let i = 0; i < fullData.length; i += CHUNK_SIZE) {
+                    const chunk = fullData.slice(i, i + CHUNK_SIZE);
+                    if (writeChar.properties.writeWithoutResponse) {
+                        await writeChar.writeValueWithoutResponse(chunk);
+                    } else {
+                        await writeChar.writeValue(chunk);
+                    }
+                    await new Promise(r => setTimeout(r, 40)); // Jeda 40ms antar paket
+                }
+
+                status.innerText = "✅ Struk berhasil dicetak!";
+                setTimeout(() => device.gatt.disconnect(), 1500);
+
+            } catch (err) {
+                console.error(err);
+                status.innerText = "❌ Batal/Gagal: " + err.message;
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
