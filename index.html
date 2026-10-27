@@ -140,8 +140,9 @@ KEMBALI  : ${kembali}
 
         // Fungsi utama mencetak ke printer
         async function printToDevice(device, isFromSaved = false) {
-            btnPrint.disabled = true;
-            btnPair.disabled = true;
+            // Sembunyikan tombol sepenuhnya saat proses cetak otomatis dimulai
+            btnPrint.style.display = 'none';
+            btnPair.style.display = 'none';
 
             try {
                 const server = await connectWithRetry(device, isFromSaved);
@@ -188,6 +189,8 @@ KEMBALI  : ${kembali}
             } catch (err) {
                 console.error(err);
                 statusEl.innerText = `❌ Gagal konek (${err.message}). Klik 'Scan / Ganti Printer Baru' di atas.`;
+                btnPrint.style.display = 'block';
+                btnPair.style.display = 'block';
                 btnPrint.disabled = false;
                 btnPair.disabled = false;
             }
