@@ -8,9 +8,10 @@
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
         .container { max-width: 380px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         h3 { margin-top: 0; color: #333; }
-        button { padding: 12px 20px; font-size: 16px; cursor: pointer; background-color: #28a745; color: white; border: none; border-radius: 6px; width: 100%; font-weight: bold; }
+        button { padding: 12px 20px; font-size: 16px; cursor: pointer; background-color: #28a745; color: white; border: none; border-radius: 6px; width: 100%; font-weight: bold; margin-bottom: 10px; }
         button:disabled { background-color: #ccc; cursor: not-allowed; }
-        #status { margin-top: 15px; font-size: 14px; color: #555; }
+        .btn-secondary { background-color: #6c757d; font-size: 13px; padding: 8px 15px; }
+        #status { margin-top: 10px; font-size: 14px; color: #555; font-weight: 500; }
         .preview { text-align: left; background: #fffdf5; padding: 15px; border: 1px dashed #888; font-family: monospace; white-space: pre-wrap; margin-bottom: 20px; font-size: 12px; line-height: 1.4; overflow-x: auto; }
     </style>
 </head>
@@ -19,12 +20,13 @@
     <div class="container">
         <h3>Preview Nota Transaksi</h3>
         <div class="preview" id="receiptPreview">Memuat data struk...</div>
-        <button id="printBtn">🖨️ Hubungkan & Cetak Struk</button>
-        <div id="status">Pastikan Bluetooth & Printer Thermal menyala.</div>
+        <button id="printBtn">🖨️ Cetak Struk Sekarang</button>
+        <button id="pairBtn" class="btn-secondary">🔍 Scan / Ganti Printer Baru</button>
+        <div id="status">Menyiapkan koneksi printer...</div>
     </div>
 
     <script>
-        // 1. Menangkap semua parameter yang dikirim dari AppSheet
+        // 1. Menangkap parameter dari AppSheet
         const p = new URLSearchParams(window.location.search);
         const pt      = p.get('pt') || 'ANDROID MOBIL KARAWANG';
         const alamat  = p.get('alamat') || '-';
@@ -39,7 +41,7 @@
         const tunai   = p.get('tunai') || '0';
         const kembali = p.get('kembali') || '0';
 
-        // 2. Menyusun tata letak struk sesuai format lama Anda (Lebar 32 Karakter)
+        // 2. Menyusun tata letak struk (Lebar 32 Karakter)
         const receiptText = 
 `      ${pt}
 ${alamat}
@@ -63,45 +65,52 @@ KEMBALI  : ${kembali}
       Untuk Klaim Garansi       
 \n\n\n`;
 
-        // Tampilkan di layar web
         document.getElementById('receiptPreview').innerText = receiptText;
 
-        // 3. Fungsi Cetak ke Printer Bluetooth (Web Bluetooth API)
-        document.getElementById('printBtn').addEventListener('click', async () => {
-            const btn = document.getElementById('printBtn');
-            const status = document.getElementById('status');
-            
-            btn.disabled = true;
-            status.innerText = "Mencari printer Bluetooth...";
+        const SERVICE_UUIDS = [
+            '000018f0-0000-1000-8000-00805f9b34fb',
+            'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+            '49535343-fe7d-4ae5-8fa9-9fafd205e455'
+        ];
+
+        const btnPrint = document.getElementById('printBtn');
+        const btnPair = document.getElementById('pairBtn');
+        const statusEl = document.getElementById('status');
+
+        // Fungsi mencari karakteristik Write secara cepat (Fast-Track untuk RPP02N)
+        async function getWriteCharacteristic(server) {
+            for (const uuid of SERVICE_UUIDS) {
+                try {
+                    const service = await server.getPrimaryService(uuid);
+                    const chars = await service.getCharacteristics();
+                    const writeChar = chars.find(c => c.properties.writeWithoutResponse || c.properties.write);
+                    if (writeChar) return writeChar;
+                } catch (e) {
+                    // Lanjut cek UUID berikutnya jika tidak cocok
+                }
+            }
+            throw new Error("Jalur cetak tidak ditemukan pada printer ini.");
+        }
+
+        // Fungsi utama mengirim data ke printer yang sudah dipilih
+        async function printToDevice(device) {
+            btnPrint.disabled = true;
+            btnPair.disabled = true;
 
             try {
-                const device = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true,
-                    optionalServices: [
-                        '000018f0-0000-1000-8000-00805f9b34fb',
-                        'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
-                        '49535343-fe7d-4ae5-8fa9-9fafd205e455'
-                    ]
-                });
+                statusEl.innerText = `Menghubungkan ke ${device.name || 'Printer'}...`;
 
-                status.innerText = `Menghubungkan ke ${device.name || 'Printer'}...`;
-                const server = await device.gatt.connect();
-
-                const services = await server.getPrimaryServices();
-                if (services.length === 0) throw new Error("Service Bluetooth printer tidak ditemukan.");
-
-                let writeChar = null;
-                for (const service of services) {
-                    const chars = await service.getCharacteristics();
-                    writeChar = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
-                    if (writeChar) break;
+                // Pastikan koneksi lama diputus dulu jika menggantung
+                if (device.gatt.connected) {
+                    device.gatt.disconnect();
+                    await new Promise(r => setTimeout(r, 300));
                 }
 
-                if (!writeChar) throw new Error("Karakteristik cetak (Write) tidak ditemukan.");
+                const server = await device.gatt.connect();
+                const writeChar = await getWriteCharacteristic(server);
 
-                status.innerText = "Mengirim data ke printer...";
+                statusEl.innerText = "Mencetak struk...";
 
-                // Reset printer (ESC @) + Teks Struk
                 const encoder = new TextEncoder();
                 const initPrinter = new Uint8Array([0x1B, 0x40]);
                 const textBytes = encoder.encode(receiptText);
@@ -110,7 +119,7 @@ KEMBALI  : ${kembali}
                 fullData.set(initPrinter, 0);
                 fullData.set(textBytes, initPrinter.length);
 
-                // Kirim bertahap (Chunking 100 byte) agar printer tidak hang/terpotong
+                // Kirim bertahap (Chunking 100 byte)
                 const CHUNK_SIZE = 100;
                 for (let i = 0; i < fullData.length; i += CHUNK_SIZE) {
                     const chunk = fullData.slice(i, i + CHUNK_SIZE);
@@ -119,17 +128,66 @@ KEMBALI  : ${kembali}
                     } else {
                         await writeChar.writeValue(chunk);
                     }
-                    await new Promise(r => setTimeout(r, 40)); // Jeda 40ms antar paket
+                    await new Promise(r => setTimeout(r, 30));
                 }
 
-                status.innerText = "✅ Struk berhasil dicetak!";
-                setTimeout(() => device.gatt.disconnect(), 1500);
+                statusEl.innerText = "✅ Berhasil dicetak! Menutup halaman...";
+                
+                setTimeout(() => {
+                    if (device.gatt.connected) device.gatt.disconnect();
+                    window.close(); // Otomatis tutup tab setelah selesai
+                }, 1000);
 
             } catch (err) {
                 console.error(err);
-                status.innerText = "❌ Batal/Gagal: " + err.message;
-            } finally {
-                btn.disabled = false;
+                statusEl.innerText = "❌ Gagal konek: Pastikan printer menyala lalu klik Cetak.";
+                btnPrint.disabled = false;
+                btnPair.disabled = false;
+            }
+        }
+
+        // Cari printer yang sudah pernah diizinkan (Tanpa Pop-up Scan)
+        async function getSavedPrinter() {
+            if (!navigator.bluetooth || !navigator.bluetooth.getDevices) return null;
+            const devices = await navigator.bluetooth.getDevices();
+            return devices.length > 0 ? devices[0] : null;
+        }
+
+        // Memunculkan Pop-up Scan (Hanya dipakai saat pertama kali atau ganti printer)
+        async function requestNewPrinter() {
+            try {
+                statusEl.innerText = "Pilih printer RPP02N pada pop-up...";
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: SERVICE_UUIDS
+                });
+                await printToDevice(device);
+            } catch (err) {
+                statusEl.innerText = "❌ Pencarian printer dibatalkan.";
+            }
+        }
+
+        // Tombol Cetak Utama: Cek printer tersimpan dulu, kalau belum ada baru scan
+        btnPrint.addEventListener('click', async () => {
+            const savedDevice = await getSavedPrinter();
+            if (savedDevice) {
+                await printToDevice(savedDevice);
+            } else {
+                await requestNewPrinter();
+            }
+        });
+
+        // Tombol Scan Manual: Jika kasir ingin ganti printer
+        btnPair.addEventListener('click', requestNewPrinter);
+
+        // AUTO-PRINT SAAT HALAMAN DIBUKA (Jika printer sudah tersimpan)
+        window.addEventListener('load', async () => {
+            const savedDevice = await getSavedPrinter();
+            if (savedDevice) {
+                statusEl.innerText = `Printer ${savedDevice.name} terdeteksi. Mencetak otomatis...`;
+                await printToDevice(savedDevice);
+            } else {
+                statusEl.innerText = "Klik 'Cetak Struk Sekarang' untuk menghubungkan printer pertama kali.";
             }
         });
     </script>
